@@ -1,0 +1,29 @@
+{
+  "location": "eastus",
+  "properties": {
+    "dataSources": {
+      "performanceCounters": [
+        {
+          "streams": ["Microsoft-Perf"],
+          "samplingFrequencyInSeconds": 60,
+          "counterSpecifiers": ["\\Processor(_Total)\\% Processor Time"],
+          "name": "perfCounters"
+        }
+      ]
+    },
+    "destinations": {
+      "logAnalytics": [
+        {
+          "workspaceResourceId": "/subscriptions/d3765321-3c2d-4e32-8f88-9ae933d32799/resourceGroups/RG-Lab-Monitor/providers/Microsoft.OperationalInsights/workspaces/LAW-Contoso-Lab",
+          "name": "law-dest"
+        }
+      ]
+    },
+    "dataFlows": [
+      {
+        "streams": ["Microsoft-Perf"],
+        "destinations": ["law-dest"]
+      }
+    ]
+  }
+}

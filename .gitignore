@@ -1,0 +1,21 @@
+@"
+# Secretos y llaves
+*.pem
+*.key
+id_rsa*
+*.pfx
+.env
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Exports y salidas locales
+*-exportado.json
+descargado_*.txt
+
+# Editor y sistema
+.vscode/
+.DS_Store
+Thumbs.db
+"@ | Out-File -FilePath .gitignore -Encoding utf8

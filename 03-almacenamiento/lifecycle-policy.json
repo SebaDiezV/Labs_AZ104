@@ -1,0 +1,28 @@
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "mover-fotos-paquetes",
+      "type": "Lifecycle",
+      "definition": {
+        "actions": {
+          "baseBlob": {
+            "tierToCool": {
+              "daysAfterModificationGreaterThan": 30
+            },
+            "tierToArchive": {
+              "daysAfterModificationGreaterThan": 180
+            },
+            "delete": {
+              "daysAfterModificationGreaterThan": 730
+            }
+          }
+        },
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["fotos-paquetes/"]
+        }
+      }
+    }
+  ]
+}

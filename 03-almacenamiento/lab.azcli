@@ -1,0 +1,155 @@
+az login
+
+
+##grupo de recursos y cuenta de almacenamiento
+az group create --name RG-Lab-Storage --location eastus
+
+$suffix = Get-Random -Minimum 1000 -Maximum 9999
+$storageAccountName = "contosolab$suffix"
+$storageAccountName
+
+az storage account create `
+    --resource-group RG-Lab-Storage `
+    --name $storageAccountName `
+    --sku Standard_LRS `
+    --kind StorageV2 `
+    --access-tier Hot
+
+##crear contenedor y subir un archivo de prueba
+az storage container create `
+    --account-name $storageAccountName `
+    --name fotos-paquetes `
+    --auth-mode login
+
+#otorgar los permisos adecuados a la cuenta
+$myId = az ad signed-in-user show --query id --output tsv
+$storageAccountId = az storage account show --resource-group RG-Lab-Storage --name $storageAccountName --query id --output tsv
+
+az role assignment create `
+    --assignee $myId `
+    --role "Storage Blob Data Contributor" `
+    --scope $storageAccountId
+
+#crear archivo y subirlo al contenedor
+"Este es un archivo de prueba para el laboratorio AZ-104" | Out-File -FilePath "contrato_final.txt"
+
+az storage blob upload `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --name contrato_final.txt `
+    --file contrato_final.txt `
+    --auth-mode login
+
+##Practicar los SAS
+#Service SAS
+$expiry = (Get-Date).AddHours(48).ToString("yyyy-MM-ddTHH:mmZ")
+
+$sasToken = az storage container generate-sas `
+    --account-name $storageAccountName `
+    --name fotos-paquetes `
+    --permissions rw `
+    --expiry $expiry `
+    --auth-mode key `
+    --output tsv
+
+$sasToken
+
+$urlConSas = "https://$storageAccountName.blob.core.windows.net/fotos-paquetes/contrato_final.txt?$sasToken"
+Invoke-WebRequest -Uri $urlConSas -Outfile "descargado_con_sas.txt"
+Get-Content "descargado_con_sas.txt"
+
+#User Delegation SAS (firmado con identidad de Entra)
+$sasTokenEntra = az storage container generate-sas `
+    --account-name $storageAccountName `
+    --name fotos-paquetes `
+    --permissions rw `
+    --expiry $expiry `
+    --auth-mode login `
+    --as-user `
+    --output tsv
+
+$sasTokenEntra
+
+#girar llaves
+az  storage account keys renew --resource-group RG-Lab-Storage --account-name $storageAccountName --key primary
+
+##Stored Access Policy (revocación centralizada)
+az storage container policy create `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --name politica-proveedor `
+    --permissions rw `
+    --expiry $expiry `
+    --auth-mode key
+
+#generar un SAS ligado a la Policy
+$sasConPolicy = az storage container generate-sas `
+    --account-name $storageAccountName `
+    --name fotos-paquetes `
+    --policy-name politica-proveedor `
+    --auth-mode key `
+    --output tsv
+
+az storage container policy delete `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --name politica-proveedor `
+    --auth-mode key
+
+##soft delete vs versioning
+az storage account blob-service-properties update `
+    --account-name $storageAccountName `
+    --resource-group RG-Lab-Storage `
+    --enable-delete-retention true `
+    --delete-retention-days 7 `
+    --enable-versioning true
+
+#simular sobrescritura
+"Versión ORIGINAL del contrato" | Out-File -FilePath "contrato_final.txt"
+az storage blob upload --account-name $storageAccountName --container-name fotos-paquetes --name contrato_final.txt --file contrato_final.txt --auth-mode login --overwrite
+
+"Versión SOBRESCRITA por error" | Out-File -FilePath "contrato_final.txt"
+az storage blob upload --account-name $storageAccountName --container-name fotos-paquetes --name contrato_final.txt --file contrato_final.txt --auth-mode login --overwrite
+
+#listar las versiones generadas automáticamente
+az storage blob list `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --include v `
+    --auth-mode login `
+    --output table
+
+#simular borrado - soft delete
+az storage blob delete `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --name contrato_final.txt `
+    --auth-mode login
+
+#confirmar soft delete - recuperable
+az storage blob list `
+    --account-name $storageAccountName `
+    --container-name fotos-paquetes `
+    --include dv `
+    --auth-mode login `
+    --output table
+
+#recuperar
+az storage blob undelete `
+    --account-name $storageAccountName `
+    --container-name fotos_paquetes `
+    --name contrato_final.txt `
+    --auth-mode login
+
+##lifecycle Management hot>cool>archive
+az storage account management-policy create `
+    --account-name $storageAccountName `
+    --resource-group RG-Lab-Storage `
+    --policy "@lifecycle-policy.json"
+
+#verificar que se encuentra aplicada 
+az storage account management-policy show --account-name $storageAccountName --resource-group RG-Lab-Storage
+
+#limpieza de recursos
+az group delete --name RG-Lab-Storage --yes --no-wait
+Remove-Item "contrato_final.txt", "descargado_con_sas.txt" -ErrorAction SilentlyContinue

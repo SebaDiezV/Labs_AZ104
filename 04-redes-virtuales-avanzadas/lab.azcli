@@ -1,0 +1,163 @@
+az login
+
+##crear grupo de recursos y 2 VNets
+az group create --name RG-Lab-Net --location eastus
+
+az network vnet create `
+    --resource-group RG-Lab-net `
+    --location eastus `
+    --name VNet-Hub `
+    --address-prefix 10.20.0.0/16 `
+    --subnet-name Subnet-Apps `
+    --subnet-prefix 10.20.1.0/24
+
+az network vnet create `
+    --resource-group RG-Lab-Net `
+    --location eastus `
+    --name VNet-Spoke `
+    --address-prefix 10.21.0.0/16 `
+    --subnet-name Subnet-Data `
+    --subnet-prefix 10.21.1.0/24
+
+##peering bidireccional
+$vnetHubId = az network vnet show --resource-group RG-Lab-Net --name VNet-Hub --query id --output tsv
+$vnetSpokeId = az network vnet show --resource-group RG-Lab-Net --name VNet-Spoke --query id --output tsv
+
+az network vnet peering create `
+    --resource-group RG-Lab-Net `
+    --name Hub-to-Spoke `
+    --vnet-name VNet-Hub `
+    --remote-vnet $vnetSpokeId `
+    --allow-vnet-access true
+
+az network vnet peering create `
+    --resource-group RG-Lab-Net `
+    --name Spoke-to-Hub `
+    --vnet-name VNet-Spoke `
+    --remote-vnet $vnetHubId `
+    --allow-vnet-access true
+
+#verificar estado de conexión de vnets
+az network vnet peering list --resource-group RG-Lab-Net --vnet-name VNet-Hub --output table
+
+##crear vm de destino sin ip pública
+az vm create `
+    --resource-group RG-Lab-Net `
+    --name VM-Sin-Ip-Publica `
+    --image Ubuntu2204 `
+    --size Standard_D2s_v7 `
+    --vnet-name VNet-Spoke `
+    --subnet Subnet-Data `
+    --admin-user azureuser `
+    --generate-ssh-keys `
+    --public-ip-address '"'
+
+#confirmar vm sin ip publica
+az vm show --resource-group RG-Lab-Net --name VM-Sin-Ip-Publica --show-details --query PublicIps --output tsv
+
+##crear subred para Azure Bastion
+az network vnet subnet create `
+    --resource-group RG-Lab-Net `
+    --vnet-name VNet-Hub `
+    --name AzureBastionSubnet `
+    --address-prefix 10.20.100.0/26
+
+##desplegar Azure Bastion
+#crear ip pública
+az network public-ip create `
+    --resource-group RG-Lab-Net `
+    --name Bastion-IP `
+    --sku Standard `
+    --allocation-method Static
+
+#desplegar Azure Bastion con la ip creada - tarda de 8 a 10 minutos
+az network bastion create `
+    --resource-group RG-Lab-Net `
+    --name Bastion-Lab `
+    --public-ip-address Bastion-IP `
+    --vnet-name VNet-Hub `
+    --location eastus `
+    --sku Basic
+
+##conectar a vm a través de Bastion - CLI
+#instalar extension de ssh para Bastion
+az extension add -n ssh
+
+#actualizar plan de Bastion de basic a standard
+az network bastion update `
+    --name Bastion-Lab `
+    --resource-group RG-Lab-Net `
+    --sku name=Standard `
+    --enable-tunneling true
+
+az network bastion ssh `
+    --name Bastion-Lab `
+    --resource-group RG-Lab-Net `
+    --target-resource-id (az vm show --resource-group RG-Lab-Net --name VM-Sin-IP-Publica --query id --output tsv) `
+    --auth-type ssh-key `
+    --username azureuser `
+    --ssh-key "$HOME\.ssh\id_rsa"
+
+## private endpoint vs service endpoint
+#crear storage account
+$suffix2 = Get-Random -Minimum 1000 -Maximum 9999
+$storageNetName = "contosonet$suffix2"
+
+az storage account create `
+    --resource-group RG-Lab-Net `
+    --name $storageNetName `
+    --location eastus `
+    --sku Standard_LRS `
+    --kind StorageV2
+
+#bloquear acceso público a Storage account
+az storage account update `
+    --resource-group RG-Lab-Net `
+    --name $storageNetName `
+    --default-action Deny
+
+#validar el acceso bloqueado
+az storage container list --account-name $storageNetName --auth-mode login --output table
+
+#service endpoint - acceso desde la subred sin ip dedicada
+#habilitar service endpoint en la subred
+az network vnet subnet update `
+    --resource-group RG-Lab-Net `
+    --vnet-name VNet-Spoke `
+    --name Subnet-Data `
+    --service-endpoints Microsoft.Storage
+
+#deshabilitar políticas de red para private endpoint en la subred
+az network vnet subnet update `
+    --resource-group RG-Lab-Net `
+    --vnet-name  VNet-Spoke `
+    --name Subnet-Data `
+    --disable-private-endpoint-network-policies true
+
+#confiar en el tráfico desde Subnet-Data al storage account
+az storage account network-rule add `
+    --resource-group RG-Lab-Net `
+    --account-name $storageNetName `
+    --vnet-name VNet-Spoke `
+    --subnet Subnet-Data
+
+#private endpoint
+az network private-endpoint create `
+    --resource-group RG-Lab-Net `
+    --name PE-Storage `
+    --vnet-name VNet-Spoke `
+    --subnet Subnet-Data `
+    --private-connection-resource-id (az storage account show --resource-group RG-Lab-Net --name $storageNetName --query id --output tsv) `
+    --group-id blob `
+    --connection-name Conexion-Storage
+
+#verificar ip asignada a private endpoint
+az network private-endpoint show `
+    --resource-group RG-Lab-Net `
+    --name PE-Storage `
+    --query "customDnsConfigs[0].ipAddresses" `
+    --output tsv
+
+##limpieza de recursos
+az network bastion delete --name Bastion-Lab --resource-group RG-Lab-Net --no-wait
+az group delete --name RG-Lab-Net --yes --no-wait

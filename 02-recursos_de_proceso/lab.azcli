@@ -1,0 +1,81 @@
+az login
+
+##crear grupo de recursos
+az group create --name RG-Lab-Compute --location eastus
+
+##crear vnet y subnet
+az network vnet create `
+    --resource-group RG-Lab-Compute `
+    --name VNet-Lab `
+    --address-prefix 10.10.0.0/16 `
+    --subnet-name Subnet-VMs `
+    --subnet-prefix 10.10.1.0/24
+
+#verificar
+az network vnet subnet list --resource-group RG-Lab-Compute --vnet-name VNet-Lab --output table
+
+##crear nsg y regla básica
+az network nsg create `
+    --resource-group RG-Lab-Compute `
+    --name NSG-Lab-VMs
+
+#crear regla para permitir ssh - solo por lab, en producción se utiliza Bastion
+az network nsg rule create `
+    --resource-group RG-Lab-Compute `
+    --nsg-name NSG-Lab-VMs `
+    --name Allow-SSH `
+    --priority 100 `
+    --direction Inbound `
+    --access Allow `
+    --protocol Tcp `
+    --destination-port-ranges 22 `
+    --source-address-prefixes "*"
+
+#vincular nsg a la subred
+az network vnet subnet update `
+    --resource-group RG-Lab-Compute `
+    --vnet-name VNet-Lab `
+    --name Subnet-VMs `
+    --network-security-group NSG-Lab-VMS
+
+##crear VM por CLI
+az vm create `
+    --resource-group RG-Lab-Compute `
+    --name VM-ERP-01 `
+    --image Ubuntu2204 `
+    --size Standard_D2s_v7 `
+    --vnet-name VNet-Lab `
+    --subnet Subnet-VMs `
+    --admin-username azureuser `
+    --generate-ssh-keys `
+    --public-ip-sku Standard
+
+#obtener ip pública de vm
+ az vm show --resource-group RG-Lab-Compute --name VM-ERP-01 --show-details --query publicIps --output tsv
+
+##conectar a VM por SSH
+ssh azureuser@13.82.147.231
+
+#endurecer nsg para restringir el acceso solo a ip indicada
+$miIp =(Invoke-RestMethod -Uri "https://api.ipify.org") 
+az network nsg rule update `
+    --resource-group RG-Lab-Compute `
+    --nsg-name NSG-Lab-VMs `
+    --name Allow-SSH `
+    --source-address-prefixes "$miIp/32"
+
+##crear segunda vm con bicep y archivo generado
+$sshKey = Get-Content "$HOME\.ssh\id_rsa.pub" -Raw
+az deployment group create `
+    --resource-group RG-Lab-Compute `
+    --template-file vm-lab.bicep `
+    --parameters sshPublicKey="$sshKey"
+
+##exportar template de lo realizado
+az group export --name RG-Lab-Compute --output json | Out-File -FilePath "rg-lab-compute-exportado.json"
+
+##paso extra - pasar json a bicep
+az bicep decompile --file rg-lab-compute-exportado.json
+
+##limpiar el laboratorio 
+az group delete --name RG-Lab-Compute --yes --no-wait

@@ -1,0 +1,122 @@
+az login
+
+##Grupo de recursos, VM y Log Analytics
+az group create --name RG-Lab-Monitor --location eastus
+
+az vm create `
+    --resource-group RG-Lab-Monitor `
+    --name VM-Monitor-01 `
+    --image Ubuntu2204 `
+    --size Standard_D2s_v7 `
+    --admin-username azureuser `
+    --generate-ssh-keys `
+    --public-ip-address none
+
+#crear log analytics workspace
+az monitor log-analytics workspace create `
+    --resource-group RG-Lab-Monitor `
+    --workspace-name LAW-Contoso-Lab `
+    --location eastus
+
+##habilitar VM insights - conecta la vm al workspace
+$workspaceId = az monitor log-analytics workspace show --resource-group RG-Lab-Monitor --workspace-name LAW-Contoso-Lab --query id --output tsv
+
+#instalar extensión a VM
+az vm extension set `
+    --resource-group RG-Lab-Monitor `
+    --vm-name VM-Monitor-01 `
+    --name AzureMonitorLinuxAgent `
+    --publisher Microsoft.Azure.Monitor `
+    --enable-auto-upgrade true
+
+#crear Data Collection Rule
+az monitor data-collection rule create `
+    --resource-group RG-Lab-Monitor `
+    --name DCR-Contoso-Lab `
+    --location eastus `
+    --rule-file dcr-lab.json
+
+#vincular VM a regla de recolección de datos
+$vmId = az vm show --resource-group RG-Lab-Monitor --name VM-Monitor-01 --query id --output tsv
+$dcrId = az monitor data-collection rule show --resource-group RG-Lab-Monitor --name DCR-Contoso-Lab --query id --output tsv
+
+az monitor data-collection rule association create `
+    --name DCRA-VM-Monitor `
+    --rule-id $dcrId `
+    --resource $vmId
+
+##consultar métricas
+az monitor metrics list `
+    --resource $vmId `
+    --metrics "Percentage CPU" `
+    --interval PT5M `
+    --output table
+
+##consultar logs con KQL
+$workspaceGuid = az monitor log-analytics workspace show `
+    --resource-group RG-Lab-Monitor `
+    --workspace-name LAW-Contoso-Lab `
+    --query customerId `
+    --output tsv
+
+az monitor log-analytics query `
+    --workspace $workspaceGuid `
+    --analytics-query "Heartbeat | where TimeGenerated > ago(15m) | summarize count() by bin(TimeGenerated, 5m)" `
+    --output table
+
+##crear Alert Rule real
+#Action Group
+az monitor action-group create `
+    --resource-group RG-Lab-Monitor `
+    --name AG-Equipo-Guardia `
+    --short-name GuardiaLab `
+    --action email AdminContoso s.diez.vidal@gmail.com
+
+az monitor metrics alert create `
+    --resource-group RG-Lab-Monitor `
+    --name Alerta-CPU-Lab `
+    --scope $vmId `
+    --condition "avg Percentage CPU > 1" `
+    --window-size 5m `
+    --evaluation-frequency 5m `
+    --action AG-Equipo-Guardia `
+    --description "Alerta de prueba - dispara con cualquier uso mínimo de CPU"
+
+##Azure Backup - Recovery Services Vault
+#crear vault
+az backup vault create `
+    --resource-group RG-Lab-Monitor `
+    --name RSV-Lab `
+    --location eastus
+
+#habilitar backup para vm
+az backup protection enable-for-vm `
+    --resource-group RG-Lab-Monitor `
+    --vault-name RSV-Lab `
+    --vm VM-Monitor-01 `
+    --policy-name DefaultPolicy
+
+#realizar backup manual
+$containerName = az backup container list --resource-group RG-Lab-Monitor --vault-name RSV-Lab --backup-management-type AzureIaasVM --query "[0].name" --output tsv
+$itemName = az backup item list --resource-group RG-Lab-Monitor --vault-name RSV-Lab --container-name $containerName --query "[0].name" --output tsv
+
+az backup protection backup-now `
+    --resource-group RG-Lab-Monitor `
+    --vault-name RSV-Lab `
+    --container-name $containerName `
+    --item-name $itemName `
+    --retain-until 01-01-2027
+
+#verificar el estado del backup
+az backup job list --resource-group RG-Lab-Monitor --vault-name RSV-Lab --output table
+
+##limpieza de recursos
+az backup protection disable `
+    --resource-group RG-Lab-Monitor `
+    --vault-name RSV-Lab `
+    --container-name $containerName `
+    --item-name $itemName `
+    --delete-backup-data true `
+    --yes
+
+az group delete --name RG-Lab-Monitor --yes --no-wait

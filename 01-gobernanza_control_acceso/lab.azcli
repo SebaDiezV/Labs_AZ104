@@ -1,0 +1,71 @@
+az login
+
+##verificar suscripción activa
+az account show --output table
+
+#cambiar de suscripción si existen más
+#az account set --subscription "nombre de la suscripción"
+
+##crear grupos de recursos para dev y prod
+az group create --name RG-Dev --location eastus
+az group create --name RG-Prod --location eastus
+
+#verificar grupos de recursos
+az group list --output table
+
+##aplicar etiquetas a los grupos, no se heredan automáticamente hasta que exista la policy para eso
+az group update --name RG-Dev --set tags.Entorno=Desarrollo tags.Departamento=TI
+az group update --name RG-Prod --set tags.Entorno=Produccion tags.Departamento=TI tags.CentroCosto=CC-1001
+
+#verificar
+az group show --name RG-Prod --query tags --output table
+
+##crear grupo de seguridad Entra ID para asignar RBAC
+az ad group create --display-name Desarrolladores-Contoso --mail-nickname DevsContoso
+
+#guardar id de grupo de seguridad
+$groupId = az ad group show --group Desarrolladores-Contoso --query id --output tsv
+
+##asignar RBAC a grupo de seguridad
+az role assignment create `
+    --assignee-object-id $groupId `
+    --assignee-principal-type Group `
+    --role Contributor `
+    --scope "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/RG-Dev"
+
+#verificar la asignación
+az role assignment list --scope "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/RG-Dev" --output table
+
+#aplicar un Resource Lock
+az lock create `
+    --name Lock-NoDelete-Prod `
+    --resource-group RG-Prod `
+    --lock-type CanNotDelete `
+    --notes "Protege RG-Prod contra borrado accidental"
+
+#probar lock - no se puede eliminar grupo de recursos
+az group delete --name RG-Prod --yes --no-wait
+
+##crear y asignar AzurePolicy
+#forzar que los nuevos recursos en dev tengan la etiqueta entorno, si no auditar
+az policy definition list --query "[?displayName=='Require a tag on resources']" --output table
+
+$policyId = az policy definition list --query "[?displayName=='Require a tag on resources'].name" --output tsv
+$subId = az account show --query id -o tsv
+
+az policy assignment create `
+    --name Require-Tag-Entorno `
+    --display-name "Requiere etiqueta Entorno en RG-Dev" `
+    --scope "/subscriptions/$subId/resourceGroups/RG-Dev" `
+    --policy $policyId `
+    --params '{"tagName":{"value":"Entorno"}}'
+
+#verificar la asignación
+az policy assignment list --resource-group RG-Dev --output table
+
+##Limpieza de recursos
+az policy assignment delete --name Require-Tag-Entorno --scope "/subscriptions/$subId/resourceGroups/RG-Dev"
+az lock delete --name Lock-NoDelete-Prod --resource-group RG-Prod
+az group delete --name RG-Prod --yes --no-wait
+az group delete --name RG-Dev --yes --no-wait
+az ad group delete --group Desarrolladores-Contoso
